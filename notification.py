@@ -666,9 +666,9 @@ class NotificationService:
         content = "\n".join(lines)
         
         # 检查长度
-        if len(content) > 3800:
-            logger.warning(f"仪表盘超长({len(content)}字符)，截断")
-            content = content[:3800] + "\n...(已截断)"
+        # if len(content) > 3800:
+        #     logger.warning(f"仪表盘超长({len(content)}字符)，截断")
+        #     content = content[:3800] + "\n...(已截断)"
         
         return content
     
@@ -735,9 +735,9 @@ class NotificationService:
         content = "\n".join(lines)
         
         # 最终检查长度
-        if len(content) > 3800:
-            logger.warning(f"精简报告仍超长({len(content)}字符)，进行截断")
-            content = content[:3800] + "\n\n...(内容过长已截断)"
+        # if len(content) > 3800:
+        #     logger.warning(f"精简报告仍超长({len(content)}字符)，进行截断")
+        #     content = content[:3800] + "\n\n...(内容过长已截断)"
         
         return content
     
@@ -754,28 +754,88 @@ class NotificationService:
         }
         
         注意：企业微信 Markdown 限制 4096 字符
+        处理策略：如果超长，自动分割成多条发送
         
         Args:
             content: Markdown 格式的消息内容
             
         Returns:
-            是否发送成功
+            是否全部发送成功
         """
         if not self.is_available():
             logger.warning("企业微信 Webhook 未配置，跳过推送")
             return False
         
-        # 检查长度
-        if len(content) > 4000:
-            logger.warning(f"消息内容超长({len(content)}字符)，将截断至4000字符")
-            content = content[:3950] + "\n\n...(内容过长已截断，详见完整报告)"
+        # 长度限制（留出一定余量）
+        MAX_LENGTH = 3500
         
-        try:
-            return self._send_single_message(content)
-        except Exception as e:
-            logger.error(f"发送企业微信消息失败: {e}")
-            return False
-    
+        if len(content) <= MAX_LENGTH:
+            try:
+                return self._send_single_message(content)
+            except Exception as e:
+                logger.error(f"发送企业微信消息失败: {e}")
+                return False
+        
+        # 内容过长，进行分割
+        logger.info(f"消息内容超长({len(content)}字符)，将分割成多条发送")
+        
+        # 尝试按消息块（---分割线）分割
+        chunks = []
+        current_chunk = []
+        current_length = 0
+        
+        lines = content.split('\n')
+        
+        # 添加分页标记
+        total_chars = len(content)
+        page_count = (total_chars // MAX_LENGTH) + 1
+        
+        for i, line in enumerate(lines):
+            line_len = len(line) + 1  # +1 for newline
+            
+            # 如果单行就超过最大长度（极少见），强制切分
+            if line_len > MAX_LENGTH:
+                # 先保存当前块
+                if current_chunk:
+                    chunks.append("\n".join(current_chunk))
+                    current_chunk = []
+                    current_length = 0
+                
+                # 强制切分长行
+                for j in range(0, len(line), MAX_LENGTH):
+                    chunks.append(line[j:j+MAX_LENGTH])
+                continue
+            
+            # 检查是否会超长
+            if current_length + line_len > MAX_LENGTH:
+                # 保存当前块
+                chunks.append("\n".join(current_chunk))
+                current_chunk = [line]
+                current_length = line_len
+            else:
+                current_chunk.append(line)
+                current_length += line_len
+        
+        # 添加最后一个块
+        if current_chunk:
+            chunks.append("\n".join(current_chunk))
+        
+        # 发送所有块
+        success_count = 0
+        for i, chunk in enumerate(chunks):
+            # 添加页码标识（除了第一页，或者每页都加）
+            paginated_content = chunk
+            if len(chunks) > 1:
+                paginated_content = f"({i+1}/{len(chunks)})\n{chunk}"
+            
+            try:
+                if self._send_single_message(paginated_content):
+                    success_count += 1
+            except Exception as e:
+                logger.error(f"发送第 {i+1} 条消息失败: {e}")
+        
+        return success_count == len(chunks)
+
     def _send_single_message(self, content: str) -> bool:
         """发送单条消息"""
         payload = {
@@ -800,8 +860,9 @@ class NotificationService:
                 logger.error(f"企业微信返回错误: {result}")
                 return False
         else:
-            logger.error(f"企业微信请求失败: {response.status_code}")
+            logger.error(f"企业微信请求失败: {response.status_code} - {response.text}")
             return False
+
     
     def _send_chunked_messages(self, content: str, max_length: int) -> bool:
         """
