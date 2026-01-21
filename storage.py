@@ -48,6 +48,28 @@ Base = declarative_base()
 
 # === 数据模型定义 ===
 
+class StockNameCache(Base):
+    """
+    股票名称缓存表
+    
+    存储股票代码到名称的映射，解决实时行情 API 失败时无法识别股票名称的问题
+    当成功获取实时行情时保存名称，后续可直接从本地缓存读取
+    """
+    __tablename__ = 'stock_name_cache'
+    
+    # 股票代码（主键）
+    code = Column(String(10), primary_key=True)
+    
+    # 股票名称
+    name = Column(String(50), nullable=False)
+    
+    # 最后更新时间
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    
+    def __repr__(self):
+        return f"<StockNameCache(code={self.code}, name={self.name})>"
+
+
 class StockDaily(Base):
     """
     股票日线数据模型
@@ -463,6 +485,74 @@ class DatabaseManager:
             return "短期走弱 🔽"
         else:
             return "震荡整理 ↔️"
+    
+    def save_stock_name(self, code: str, name: str) -> bool:
+        """
+        保存股票名称到本地缓存
+        
+        当成功获取实时行情时调用，保存股票名称供后续使用
+        
+        Args:
+            code: 股票代码
+            name: 股票名称
+            
+        Returns:
+            是否保存成功
+        """
+        if not code or not name:
+            return False
+        
+        try:
+            with self.get_session() as session:
+                # 检查是否已存在
+                existing = session.execute(
+                    select(StockNameCache).where(StockNameCache.code == code)
+                ).scalar_one_or_none()
+                
+                if existing:
+                    # 更新现有记录
+                    existing.name = name
+                    existing.updated_at = datetime.now()
+                    logger.debug(f"更新股票名称缓存: {code} -> {name}")
+                else:
+                    # 创建新记录
+                    record = StockNameCache(code=code, name=name)
+                    session.add(record)
+                    logger.debug(f"保存股票名称缓存: {code} -> {name}")
+                
+                session.commit()
+                return True
+                
+        except Exception as e:
+            logger.error(f"保存股票名称缓存失败: {e}")
+            return False
+    
+    def get_stock_name(self, code: str) -> Optional[str]:
+        """
+        从本地缓存获取股票名称
+        
+        Args:
+            code: 股票代码
+            
+        Returns:
+            股票名称，如果不存在返回 None
+        """
+        if not code:
+            return None
+        
+        try:
+            with self.get_session() as session:
+                result = session.execute(
+                    select(StockNameCache).where(StockNameCache.code == code)
+                ).scalar_one_or_none()
+                
+                if result:
+                    return result.name
+                return None
+                
+        except Exception as e:
+            logger.error(f"获取股票名称缓存失败: {e}")
+            return None
 
 
 # 便捷函数

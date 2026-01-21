@@ -657,25 +657,40 @@ class GeminiAnalyzer:
         
         # Gemini 所有重试都失败，尝试 OpenAI 兼容 API
         if self._openai_client:
-            logger.warning("[Gemini] 所有重试失败，切换到 OpenAI 兼容 API")
+            logger.warning(f"[Gemini] 第 {max_retries} 次重试失败，切换到 OpenAI 兼容 API")
             try:
                 return self._call_openai_api(prompt, generation_config)
             except Exception as openai_error:
-                logger.error(f"[OpenAI] 备选 API 也失败: {openai_error}")
-                raise last_error or openai_error
+                logger.error(f"[OpenAI] API 也失败: {openai_error}")
+                # 记录详细错误信息，便于排查
+                logger.error(f"[错误详情] Gemini 错误: {last_error}")
+                logger.error(f"[错误详情] OpenAI 错误: {openai_error}")
+                raise Exception(
+                    f"AI 分析失败:\n"
+                    f"1. Google Gemini: {str(last_error)[:100] if last_error else '未知错误'}\n"
+                    f"2. OpenAI 兼容 API: {str(openai_error)[:100]}\n"
+                    f"请检查 API 配置或网络连接"
+                )
         elif config.openai_api_key and config.openai_base_url:
             # 尝试懒加载初始化 OpenAI
-            logger.warning("[Gemini] 所有重试失败，尝试初始化 OpenAI 兼容 API")
+            logger.warning(f"[Gemini] 第 {max_retries} 次重试失败，尝试初始化 OpenAI 兼容 API")
             self._init_openai_fallback()
             if self._openai_client:
                 try:
                     return self._call_openai_api(prompt, generation_config)
                 except Exception as openai_error:
                     logger.error(f"[OpenAI] 备选 API 也失败: {openai_error}")
-                    raise last_error or openai_error
+                    raise Exception(
+                        f"AI 分析失败:\n"
+                        f"1. Google Gemini: {str(last_error)[:100] if last_error else '未知错误'}\n"
+                        f"2. OpenAI 兼容 API: {str(openai_error)[:100]}\n"
+                        f"请检查 API 配置或网络连接"
+                    )
         
         # 所有方式都失败
-        raise last_error or Exception("所有 AI API 调用失败，已达最大重试次数")
+        error_msg = f"AI 分析失败: Gemini 和 OpenAI 兼容 API 均不可用\n详细错误: {str(last_error) if last_error else '未知错误'}"
+        logger.error(f"[{error_msg}]")
+        raise Exception(error_msg)
     
     def analyze(
         self, 

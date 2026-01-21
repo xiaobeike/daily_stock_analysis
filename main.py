@@ -231,8 +231,13 @@ class StockAnalysisPipeline:
             AnalysisResult 或 None（如果分析失败）
         """
         try:
-            # 获取股票名称（优先从实时行情获取真实名称）
-            stock_name = STOCK_NAME_MAP.get(code, '')
+            # Step 0: 优先从本地缓存获取股票名称
+            stock_name = self.db.get_stock_name(code)
+            if stock_name:
+                logger.info(f"[{code}] 从本地缓存获取股票名称: {stock_name}")
+            else:
+                # 备选：从静态映射表获取
+                stock_name = STOCK_NAME_MAP.get(code, '')
             
             # Step 1: 获取实时行情（量比、换手率等）
             realtime_quote: Optional[RealtimeQuote] = None
@@ -242,10 +247,16 @@ class StockAnalysisPipeline:
                     # 使用实时行情返回的真实股票名称
                     if realtime_quote.name:
                         stock_name = realtime_quote.name
+                        # 保存到本地缓存
+                        self.db.save_stock_name(code, stock_name)
+                        logger.info(f"[{code}] 获取实时行情成功，已保存股票名称到本地缓存: {stock_name}")
                     logger.info(f"[{code}] {stock_name} 实时行情: 价格={realtime_quote.price}, "
                               f"量比={realtime_quote.volume_ratio}, 换手率={realtime_quote.turnover_rate}%")
             except Exception as e:
                 logger.warning(f"[{code}] 获取实时行情失败: {e}")
+                # 如果本地缓存已有名称，继续使用
+                if not stock_name:
+                    stock_name = self.db.get_stock_name(code)
             
             # 如果还是没有名称，使用代码作为名称
             if not stock_name:
