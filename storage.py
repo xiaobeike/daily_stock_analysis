@@ -530,29 +530,99 @@ class DatabaseManager:
     def get_stock_name(self, code: str) -> Optional[str]:
         """
         从本地缓存获取股票名称
-        
+
         Args:
             code: 股票代码
-            
+
         Returns:
             股票名称，如果不存在返回 None
         """
         if not code:
             return None
-        
+
         try:
             with self.get_session() as session:
                 result = session.execute(
                     select(StockNameCache).where(StockNameCache.code == code)
                 ).scalar_one_or_none()
-                
+
                 if result:
                     return result.name
                 return None
-                
+
         except Exception as e:
             logger.error(f"获取股票名称缓存失败: {e}")
             return None
+
+    def cleanup_invalid_stock_names(self) -> int:
+        """
+        清理无效的股票名称缓存
+
+        无效名称包括：
+        - 以"股票"开头（如"股票000333"）
+        - 与代码相同（如"000333"）
+        - 纯数字
+        - 空字符串
+        - 长度不合法（<2 或 >10字符）
+
+        Returns:
+            删除的记录数量
+        """
+        import re
+
+        try:
+            with self.get_session() as session:
+                # 获取所有缓存的股票名称
+                all_records = session.execute(
+                    select(StockNameCache)
+                ).scalars().all()
+
+                deleted_count = 0
+                invalid_names = []
+
+                for record in all_records:
+                    name = record.name
+                    code = record.code
+                    is_invalid = False
+                    reason = ""
+
+                    # 检查空字符串
+                    if not name or not name.strip():
+                        is_invalid = True
+                        reason = "空字符串"
+                    # 检查以"股票"开头
+                    elif name.startswith("股票"):
+                        is_invalid = True
+                        reason = "以'股票'开头"
+                    # 检查与代码相同
+                    elif name == code:
+                        is_invalid = True
+                        reason = "与代码相同"
+                    # 检查纯数字
+                    elif name.replace(".", "").replace("-", "").isdigit():
+                        is_invalid = True
+                        reason = "纯数字"
+                    # 检查长度
+                    elif len(name.strip()) < 2 or len(name.strip()) > 10:
+                        is_invalid = True
+                        reason = f"长度不合法({len(name)}字符)"
+
+                    if is_invalid:
+                        invalid_names.append((code, name, reason))
+                        session.delete(record)
+                        deleted_count += 1
+
+                if invalid_names:
+                    session.commit()
+                    logger.info(f"清理了 {deleted_count} 条无效股票名称缓存:")
+                    for code, name, reason in invalid_names:
+                        logger.info(f"  - {code}: '{name}' ({reason})")
+
+                return deleted_count
+
+        except Exception as e:
+            logger.error(f"清理无效股票名称缓存失败: {e}")
+            return 0
 
 
 # 便捷函数
