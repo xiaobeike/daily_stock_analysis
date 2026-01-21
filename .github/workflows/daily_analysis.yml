@@ -67,6 +67,11 @@ jobs:
           # 自选股列表 (从 secrets 或使用默认值)
           STOCK_LIST: ${{ secrets.STOCK_LIST || '600519' }}
           
+          # OpenAI 兼容 API（DeepSeek、通义千问等备选方案）
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL || 'https://api.deepseek.com/v1' }}
+          OPENAI_MODEL: ${{ secrets.OPENAI_MODEL || 'deepseek-chat' }}
+          
           # 其他配置
           LOG_LEVEL: INFO
           DATA_DAYS: 60

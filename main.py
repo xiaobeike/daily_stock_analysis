@@ -58,16 +58,66 @@ LOG_DATE_FORMAT = '%Y-%m-%d %H:%M:%S'
 def setup_logging(debug: bool = False, log_dir: str = "./logs") -> None:
     """
     配置日志系统（同时输出到控制台和文件）
-    
+
     Args:
         debug: 是否启用调试模式
         log_dir: 日志文件目录
     """
     level = logging.DEBUG if debug else logging.INFO
-    
+
     # 创建日志目录
     log_path = Path(log_dir)
     log_path.mkdir(parents=True, exist_ok=True)
+
+
+def is_valid_stock_name(code: str, name: str) -> bool:
+    """
+    验证股票名称是否有效
+
+    无效名称示例：
+    - "股票000333" (以"股票"开头)
+    - "000333" (与代码相同)
+    - "" (空字符串)
+    - "1.00" (纯数字)
+
+    Args:
+        code: 股票代码
+        name: 待验证的名称
+
+    Returns:
+        True: 名称有效
+        False: 名称无效
+    """
+    if not name:
+        return False
+
+    # 去除首尾空格
+    name = name.strip()
+
+    # 长度检查（股票名称通常2-10个汉字）
+    if len(name) < 2 or len(name) > 10:
+        return False
+
+    # 不能与代码相同
+    if name == code:
+        return False
+
+    # 不能以"股票"开头
+    if name.startswith("股票"):
+        return False
+
+    # 不能全是数字（包括带小数点的情况如 "1.00"）
+    if name.replace(".", "").replace("-", "").isdigit():
+        return False
+
+    # 必须包含至少一个汉字（A股股票名称通常是汉字）
+    # 允许英文名称如 "AAPL" 但排除纯数字/符号
+    has_chinese = any('\u4e00' <= c <= '\u9fff' for c in name)
+    has_letter = any('a' <= c.lower() <= 'z' for c in name)
+    if not has_chinese and not has_letter:
+        return False
+
+    return True
     
     # 日志文件路径（按日期分文件）
     today_str = datetime.now().strftime('%Y%m%d')
@@ -246,10 +296,17 @@ class StockAnalysisPipeline:
                 if realtime_quote:
                     # 使用实时行情返回的真实股票名称
                     if realtime_quote.name:
-                        stock_name = realtime_quote.name
-                        # 保存到本地缓存
-                        self.db.save_stock_name(code, stock_name)
-                        logger.info(f"[{code}] 获取实时行情成功，已保存股票名称到本地缓存: {stock_name}")
+                        # 验证名称是否有效（拒绝无效名称如"股票000333"）
+                        if is_valid_stock_name(code, realtime_quote.name):
+                            stock_name = realtime_quote.name
+                            # 保存到本地缓存
+                            self.db.save_stock_name(code, stock_name)
+                            logger.info(f"[{code}] 获取实时行情成功，已保存股票名称到本地缓存: {stock_name}")
+                        else:
+                            logger.warning(f"[{code}] API返回的股票名称无效: '{realtime_quote.name}'，使用后备名称")
+                            # 使用后备名称
+                            if not stock_name:
+                                stock_name = f'股票{code}'
                     logger.info(f"[{code}] {stock_name} 实时行情: 价格={realtime_quote.price}, "
                               f"量比={realtime_quote.volume_ratio}, 换手率={realtime_quote.turnover_rate}%")
             except Exception as e:
