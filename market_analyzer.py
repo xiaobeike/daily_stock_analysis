@@ -110,46 +110,216 @@ class MarketAnalyzer:
         
     def get_market_overview(self) -> MarketOverview:
         """
-        获取市场概览数据
-        
-        Returns:
-            MarketOverview: 市场概览数据对象
+        获取大盘综合数据
+
+        流程：
+        1. 获取主要指数实时行情（主：akshare，备：Tushare → yfinance）
+        2. 获取市场涨跌统计
+        3. 获取板块涨跌榜
+        4. 获取北向资金流入
         """
-        today = datetime.now().strftime('%Y-%m-%d')
-        overview = MarketOverview(date=today)
-        
-        # 1. 获取主要指数行情
-        overview.indices = self._get_main_indices()
-        
-        # 2. 获取涨跌统计
+        overview = MarketOverview()
+
+        # 1. 获取主要指数行情（多数据源）
+        indices = self._get_main_indices()
+        overview.indices = indices
+
+        # 如果 akshare 失败，尝试 Tushare
+        if len(indices) < len(self.MAIN_INDICES):
+            logger.warning(f"[大盘] akshare 获取到 {len(indices)}/{len(self.MAIN_INDICES)} 个指数，尝试 Tushare...")
+            tushare_indices = self._get_main_indices_via_tushare()
+            if tushare_indices:
+                existing_codes = {idx.code for idx in indices}
+                for idx in tushare_indices:
+                    if idx.code not in existing_codes:
+                        indices.append(idx)
+                        logger.info(f"[大盘-Tushare] 补充: {idx.name}({idx.code})")
+
+        # 如果 Tushare 也失败，尝试 yfinance
+        if len(indices) < len(self.MAIN_INDICES):
+            logger.warning(f"[大盘] Tushare 补充后仍只有 {len(indices)}/{len(self.MAIN_INDICES)} 个，尝试 yfinance...")
+            backup_indices = self._get_backup_indices()
+            if backup_indices:
+                existing_codes = {idx.code for idx in indices}
+                for idx in backup_indices:
+                    if idx.code not in existing_codes:
+                        indices.append(idx)
+                        logger.info(f"[大盘-yfinance] 补充: {idx.name}({idx.code})")
+
+        overview.indices = indices
+        logger.info(f"[大盘] 最终获取 {len(indices)}/{len(self.MAIN_INDICES)} 个指数")
+
+        # 2. 获取市场涨跌统计
         self._get_market_statistics(overview)
-        
+
         # 3. 获取板块涨跌榜
         self._get_sector_rankings(overview)
-        
-        # 4. 获取北向资金（可选）
+
+        # 4. 获取北向资金流入
         self._get_north_flow(overview)
-        
+
+        # 5. 如果所有数据源都失败，标记市场状态为"数据获取失败"
+        if not overview.indices and overview.up_count == 0:
+            overview.market_status = "数据获取失败"
+            logger.warning("[大盘] 所有数据源均未获取到数据")
+
         return overview
+
+    def _get_main_indices_via_tushare(self) -> List[MarketIndex]:
+        """
+        通过 Tushare 获取指数数据
+
+        Tushare 指数接口：
+        - index_daily: 获取指数日线数据
+        - 支持的指数代码: 000001.SH(上证), 399001.SZ(深证), 399006.SZ(创业板)等
+        """
+        from config import get_config
+        indices = []
+
+        config = get_config()
+        if not config.tushare_token:
+            logger.debug("[大盘-Tushare] 未配置 Tushare Token")
+        return indices
+
+    def _get_backup_indices(self) -> List[MarketIndex]:
+        """
+        通过 yfinance 获取备用指数数据
+
+        当 akshare 和 Tushare 都失败时使用
+        使用美股上市的中国相关 ETF 作为代理
+        """
+        indices = []
+        try:
+            import yfinance as yf
+
+            # ETF 映射（美股上市的中国相关 ETF）
+            ticker_map = {
+                '000001': 'ASHR',      # 上证指数 ETF
+                '399001': 'ASHR',      # 深证成指 (同 ASHR)
+                '399006': 'FXI',       # 创业板指
+                '000688': 'SHE',       # 科创50 (深市)
+                '000016': 'CH50',      # 上证50
+                '000300': 'CSI300',    # 沪深300
+            }
+
+            for code, ticker in ticker_map.items():
+                if code in [idx.code for idx in indices]:
+                    continue
+
+                try:
+                    etf = yf.Ticker(ticker)
+                    hist = etf.history(period="1d")
+
+                    if not hist.empty:
+                        current = hist['Close'].iloc[-1]
+                        prev_close = hist['Open'].iloc[-1] if len(hist) > 1 else current
+                        change_pct = (current - prev_close) / prev_close * 100 if prev_close > 0 else 0
+
+                        index = MarketIndex(
+                            code=code,
+                            name=self.MAIN_INDICES.get(code, code),
+                            current=round(current, 2),
+                            change_pct=round(change_pct, 2),
+                        )
+                        indices.append(index)
+                        logger.info(f"[大盘-yfinance] {index.name}({code}): ${current:.2f} ({change_pct:+.2f}%)")
+                except Exception as e:
+                    logger.debug(f"[大盘-yfinance] {ticker} 获取失败: {e}")
+
+        except ImportError:
+            logger.warning("[大盘-yfinance] yfinance 未安装")
+        except Exception as e:
+            logger.error(f"[大盘-yfinance] 异常: {e}")
+
+        return indices
+
+        try:
+            import tushare as ts
+            pro = ts.pro_api(config.tushare_token)
+
+            # Tushare 指数代码映射
+            ts_code_map = {
+                '000001': '000001.SH',  # 上证指数
+                '399001': '399001.SZ',  # 深证成指
+                '399006': '399006.SZ',  # 创业板指
+                '000688': '000688.SH',  # 科创50
+                '000016': '000016.SH',  # 上证50
+                '000300': '000300.SH',  # 沪深300
+            }
+
+            logger.info("[大盘-Tushare] 开始获取指数数据...")
+
+            for code, name in self.MAIN_INDICES.items():
+                ts_code = ts_code_map.get(code)
+                if not ts_code:
+                    continue
+
+                try:
+                    # 获取最近交易日数据
+                    df = pro.index_daily(ts_code=ts_code, limit=2)
+
+                    if df is not None and not df.empty:
+                        # 取最新一条
+                        latest = df.iloc[0]
+
+                        index = MarketIndex(
+                            code=code,
+                            name=name,
+                            current=float(latest.get('close', 0) or 0),
+                            change=float(latest.get('pct_chg', 0) or 0),
+                            open=float(latest.get('open', 0) or 0),
+                            high=float(latest.get('high', 0) or 0),
+                            low=float(latest.get('low', 0) or 0),
+                            prev_close=float(latest.get('pre_close', 0) or 0),
+                            volume=float(latest.get('vol', 0) or 0),
+                            amount=float(latest.get('amount', 0) or 0),
+                        )
+
+                        # 计算涨跌额
+                        if index.current > 0 and index.prev_close > 0:
+                            index.change = index.current - index.prev_close
+
+                        # 计算振幅
+                        if index.prev_close > 0:
+                            index.amplitude = (index.high - index.low) / index.prev_close * 100
+
+                        indices.append(index)
+                        logger.info(f"[大盘-Tushare] {name}({code}): {index.current:.2f} ({index.change_pct:+.2f}%)")
+
+                except Exception as e:
+                    logger.debug(f"[大盘-Tushare] {code} 获取失败: {e}")
+                    continue
+
+            logger.info(f"[大盘-Tushare] 成功获取 {len(indices)} 个指数")
+
+        except ImportError:
+            logger.warning("[大盘-Tushare] tushare 库未安装")
+        except Exception as e:
+            logger.error(f"[大盘-Tushare] 获取指数失败: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
+
+        return indices
     
     def _get_main_indices(self) -> List[MarketIndex]:
         """获取主要指数实时行情"""
         indices = []
-        
+
         try:
             logger.info("[大盘] 获取主要指数实时行情...")
-            
+
             # 使用 akshare 获取指数行情
             df = ak.stock_zh_index_spot_em()
-            
+
             if df is not None and not df.empty:
+                logger.info(f"[大盘] stock_zh_index_spot_em 返回 {len(df)} 条数据")
                 for code, name in self.MAIN_INDICES.items():
                     # 查找对应指数
                     row = df[df['代码'] == code]
                     if row.empty:
                         # 尝试带前缀查找
-                        row = df[df['代码'].str.contains(code)]
-                    
+                        row = df[df['代码'].str.contains(code, na=False)]
+
                     if not row.empty:
                         row = row.iloc[0]
                         index = MarketIndex(
@@ -169,23 +339,37 @@ class MarketAnalyzer:
                         if index.prev_close > 0:
                             index.amplitude = (index.high - index.low) / index.prev_close * 100
                         indices.append(index)
-                        
-                logger.info(f"[大盘] 获取到 {len(indices)} 个指数行情")
-                
+                        logger.info(f"[大盘] {name}({code}): {index.current:.2f} ({index.change_pct:+.2f}%)")
+
+                logger.info(f"[大盘] 获取到 {len(indices)}/{len(self.MAIN_INDICES)} 个指数行情")
+
+                # 如果获取数量不足，记录警告
+                if len(indices) < len(self.MAIN_INDICES):
+                    missing = [name for code, name in self.MAIN_INDICES.items()
+                              if code not in [idx.code for idx in indices]]
+                    logger.warning(f"[大盘] 缺失的指数: {missing}")
+
+            else:
+                logger.warning("[大盘] stock_zh_index_spot_em 返回空数据")
+
         except Exception as e:
             logger.error(f"[大盘] 获取指数行情失败: {e}")
-        
+            import traceback
+            logger.debug(traceback.format_exc())
+
         return indices
     
     def _get_market_statistics(self, overview: MarketOverview):
         """获取市场涨跌统计"""
         try:
             logger.info("[大盘] 获取市场涨跌统计...")
-            
+
             # 获取全部A股实时行情
             df = ak.stock_zh_a_spot_em()
-            
+
             if df is not None and not df.empty:
+                logger.info(f"[大盘] stock_zh_a_spot_em 返回 {len(df)} 条数据")
+
                 # 涨跌统计
                 change_col = '涨跌幅'
                 if change_col in df.columns:
@@ -193,78 +377,95 @@ class MarketAnalyzer:
                     overview.up_count = len(df[df[change_col] > 0])
                     overview.down_count = len(df[df[change_col] < 0])
                     overview.flat_count = len(df[df[change_col] == 0])
-                    
+
                     # 涨停跌停统计（涨跌幅 >= 9.9% 或 <= -9.9%）
                     overview.limit_up_count = len(df[df[change_col] >= 9.9])
                     overview.limit_down_count = len(df[df[change_col] <= -9.9])
-                
+
                 # 两市成交额
                 amount_col = '成交额'
                 if amount_col in df.columns:
                     df[amount_col] = pd.to_numeric(df[amount_col], errors='coerce')
                     overview.total_amount = df[amount_col].sum() / 1e8  # 转为亿元
-                
+
                 logger.info(f"[大盘] 涨:{overview.up_count} 跌:{overview.down_count} 平:{overview.flat_count} "
                           f"涨停:{overview.limit_up_count} 跌停:{overview.limit_down_count} "
                           f"成交额:{overview.total_amount:.0f}亿")
-                
+
+            else:
+                logger.warning("[大盘] stock_zh_a_spot_em 返回空数据")
+
         except Exception as e:
             logger.error(f"[大盘] 获取涨跌统计失败: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
     
     def _get_sector_rankings(self, overview: MarketOverview):
         """获取板块涨跌榜"""
         try:
             logger.info("[大盘] 获取板块涨跌榜...")
-            
+
             # 获取行业板块行情
             df = ak.stock_board_industry_name_em()
-            
+
             if df is not None and not df.empty:
+                logger.info(f"[大盘] stock_board_industry_name_em 返回 {len(df)} 条数据")
+
                 change_col = '涨跌幅'
                 if change_col in df.columns:
                     df[change_col] = pd.to_numeric(df[change_col], errors='coerce')
                     df = df.dropna(subset=[change_col])
-                    
+
                     # 涨幅前5
                     top = df.nlargest(5, change_col)
                     overview.top_sectors = [
                         {'name': row['板块名称'], 'change_pct': row[change_col]}
                         for _, row in top.iterrows()
                     ]
-                    
+
                     # 跌幅前5
                     bottom = df.nsmallest(5, change_col)
                     overview.bottom_sectors = [
                         {'name': row['板块名称'], 'change_pct': row[change_col]}
                         for _, row in bottom.iterrows()
                     ]
-                    
+
                     logger.info(f"[大盘] 领涨板块: {[s['name'] for s in overview.top_sectors]}")
                     logger.info(f"[大盘] 领跌板块: {[s['name'] for s in overview.bottom_sectors]}")
-                    
+            else:
+                logger.warning("[大盘] stock_board_industry_name_em 返回空数据")
+
         except Exception as e:
             logger.error(f"[大盘] 获取板块涨跌榜失败: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
     
     def _get_north_flow(self, overview: MarketOverview):
         """获取北向资金流入"""
         try:
             logger.info("[大盘] 获取北向资金...")
-            
+
             # 获取北向资金数据
             df = ak.stock_hsgt_north_net_flow_in_em(symbol="北上")
-            
+
             if df is not None and not df.empty:
+                logger.info(f"[大盘] stock_hsgt_north_net_flow_in_em 返回 {len(df)} 条数据")
+
                 # 取最新一条数据
                 latest = df.iloc[-1]
                 if '当日净流入' in df.columns:
                     overview.north_flow = float(latest['当日净流入']) / 1e8  # 转为亿元
                 elif '净流入' in df.columns:
                     overview.north_flow = float(latest['净流入']) / 1e8
-                    
+
                 logger.info(f"[大盘] 北向资金净流入: {overview.north_flow:.2f}亿")
-                
+            else:
+                logger.warning("[大盘] stock_hsgt_north_net_flow_in_em 返回空数据")
+
         except Exception as e:
             logger.warning(f"[大盘] 获取北向资金失败: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
     
     def search_market_news(self) -> List[Dict]:
         """

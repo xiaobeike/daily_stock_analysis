@@ -286,8 +286,13 @@ class StockAnalysisPipeline:
             if stock_name:
                 logger.info(f"[{code}] 从本地缓存获取股票名称: {stock_name}")
             else:
-                # 备选：从静态映射表获取
-                stock_name = STOCK_NAME_MAP.get(code, '')
+                # 备选：从配置解析的映射获取
+                stock_name = self.config.get_stock_name(code)
+                if stock_name:
+                    logger.info(f"[{code}] 从配置获取股票名称: {stock_name}")
+                else:
+                    # 最后从静态映射表获取
+                    stock_name = STOCK_NAME_MAP.get(code, '')
             
             # Step 1: 获取实时行情（量比、换手率等）
             realtime_quote: Optional[RealtimeQuote] = None

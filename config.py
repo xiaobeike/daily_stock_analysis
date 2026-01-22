@@ -71,6 +71,9 @@ class Config:
     schedule_enabled: bool = False            # 是否启用定时任务
     schedule_time: str = "18:00"              # 每日推送时间（HH:MM 格式）
     market_review_enabled: bool = True        # 是否启用大盘复盘
+
+    # === 股票名称映射（从配置解析） ===
+    _stock_name_map: dict = field(default_factory=dict)  # 代码 -> 名称 映射
     
     # === 流控配置（防封禁关键参数）===
     # Akshare 请求间隔范围（秒）
@@ -116,17 +119,48 @@ class Config:
         env_path = Path(__file__).parent / '.env'
         load_dotenv(dotenv_path=env_path)
         
-        # 解析自选股列表（逗号分隔）
+        # 解析自选股列表（支持两种格式）
+        # 格式1: 纯代码 (向后兼容) - "600519,300750,000001"
+        # 格式2: 代码:名称 (推荐) - "600519:贵州茅台,300750:宁德时代"
         stock_list_str = os.getenv('STOCK_LIST', '')
-        stock_list = [
-            code.strip() 
-            for code in stock_list_str.split(',') 
-            if code.strip()
-        ]
-        
+        stock_list = []
+        stock_name_map = {}  # 代码到名称的映射
+
+        for code in stock_list_str.split(','):
+            code = code.strip()
+            if not code:
+                continue
+
+            # 检查是否包含分隔符
+            if ':' in code:
+                # 格式: "代码:名称"
+                parts = code.split(':', 1)
+                stock_code = parts[0].strip()
+                stock_name = parts[1].strip() if len(parts) > 1 else ''
+                if stock_code:
+                    stock_list.append(stock_code)
+                    if stock_name:
+                        stock_name_map[stock_code] = stock_name
+            elif '-' in code and not code[0].isdigit():
+                # 兼容旧格式: "代码-名称"
+                parts = code.split('-', 1)
+                stock_code = parts[0].strip()
+                stock_name = parts[1].strip() if len(parts) > 1 else ''
+                if stock_code:
+                    stock_list.append(stock_code)
+                    if stock_name:
+                        stock_name_map[stock_code] = stock_name
+            elif code:
+                # 纯代码格式
+                stock_list.append(code)
+
         # 如果没有配置，使用默认的示例股票
         if not stock_list:
             stock_list = ['600519', '000001', '300750']
+
+        # 存储股票名称映射到环境变量（供其他模块使用）
+        if stock_name_map:
+            os.environ['STOCK_NAME_MAP'] = ','.join([f"{k}:{v}" for k, v in stock_name_map.items()])
         
         # 解析搜索引擎 API Keys（支持多个 key，逗号分隔）
         tavily_keys_str = os.getenv('TAVILY_API_KEYS', '')
@@ -158,6 +192,8 @@ class Config:
             schedule_enabled=os.getenv('SCHEDULE_ENABLED', 'false').lower() == 'true',
             schedule_time=os.getenv('SCHEDULE_TIME', '18:00'),
             market_review_enabled=os.getenv('MARKET_REVIEW_ENABLED', 'true').lower() == 'true',
+            # 注入预解析的股票名称映射
+            _stock_name_map=stock_name_map,
         )
     
     @classmethod
@@ -196,12 +232,24 @@ class Config:
     def get_db_url(self) -> str:
         """
         获取 SQLAlchemy 数据库连接 URL
-        
+
         自动创建数据库目录（如果不存在）
         """
         db_path = Path(self.database_path)
         db_path.parent.mkdir(parents=True, exist_ok=True)
         return f"sqlite:///{db_path.absolute()}"
+
+    def get_stock_name(self, code: str) -> Optional[str]:
+        """
+        获取股票名称
+
+        Args:
+            code: 股票代码
+
+        Returns:
+            股票名称，如果未配置则返回 None
+        """
+        return self._stock_name_map.get(code)
 
 
 # === 便捷的配置访问函数 ===
