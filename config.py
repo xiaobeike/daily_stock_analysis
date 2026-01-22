@@ -120,39 +120,66 @@ class Config:
         load_dotenv(dotenv_path=env_path)
         
         # 解析自选股列表（支持两种格式）
-        # 格式1: 纯代码 (向后兼容) - "600519,300750,000001"
-        # 格式2: 代码:名称 (推荐) - "600519:贵州茅台,300750:宁德时代"
+        # 格式1: 代码:名称 (推荐) - "600519:贵州茅台,300750:宁德时代"
+        # 格式2: 名称:代码 - "贵州茅台:600519,宁德时代:300750"
         stock_list_str = os.getenv('STOCK_LIST', '')
         stock_list = []
         stock_name_map = {}  # 代码到名称的映射
 
-        for code in stock_list_str.split(','):
-            code = code.strip()
-            if not code:
+        for item in stock_list_str.split(','):
+            item = item.strip()
+            if not item:
                 continue
 
-            # 检查是否包含分隔符
-            if ':' in code:
-                # 格式: "代码:名称"
-                parts = code.split(':', 1)
-                stock_code = parts[0].strip()
-                stock_name = parts[1].strip() if len(parts) > 1 else ''
+            # 检测格式：看哪边是纯数字（6位数字是股票/ETF代码）
+            if ':' in item:
+                parts = item.split(':', 1)
+                part1, part2 = parts[0].strip(), parts[1].strip()
+
+                # 判断哪边是代码
+                if part1.isdigit() and len(part1) == 6:
+                    # 格式1: 代码:名称
+                    stock_code = part1
+                    stock_name = part2
+                elif part2.isdigit() and len(part2) == 6:
+                    # 格式2: 名称:代码
+                    stock_code = part2
+                    stock_name = part1
+                else:
+                    # 无法判断，跳过或当作代码处理
+                    if part1.isdigit() and len(part1) == 6:
+                        stock_code = part1
+                        stock_name = ''
+                    else:
+                        continue
+
                 if stock_code:
                     stock_list.append(stock_code)
                     if stock_name:
                         stock_name_map[stock_code] = stock_name
-            elif '-' in code and not code[0].isdigit():
-                # 兼容旧格式: "代码-名称"
-                parts = code.split('-', 1)
-                stock_code = parts[0].strip()
-                stock_name = parts[1].strip() if len(parts) > 1 else ''
+
+            elif '-' in item:
+                # 兼容旧格式: "代码-名称" 或 "名称-代码"
+                parts = item.split('-', 1)
+                part1, part2 = parts[0].strip(), parts[1].strip()
+
+                if part1.isdigit() and len(part1) == 6:
+                    stock_code = part1
+                    stock_name = part2
+                elif part2.isdigit() and len(part2) == 6:
+                    stock_code = part2
+                    stock_name = part1
+                else:
+                    continue
+
                 if stock_code:
                     stock_list.append(stock_code)
                     if stock_name:
                         stock_name_map[stock_code] = stock_name
-            elif code:
+
+            elif item:
                 # 纯代码格式
-                stock_list.append(code)
+                stock_list.append(item)
 
         # 如果没有配置，使用默认的示例股票
         if not stock_list:
