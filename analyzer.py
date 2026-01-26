@@ -467,7 +467,12 @@ class GeminiAnalyzer:
         - 不启用 Google Search（使用外部 Tavily/SerpAPI 搜索）
         """
         try:
-            import google.generativeai as genai
+            # 尝试使用新的 google.genai 包
+            try:
+                import google.genai as genai
+            except ImportError:
+                # 回退到旧的 google.generativeai 包
+                import google.generativeai as genai
             
             # 配置 API Key
             genai.configure(api_key=self._api_key)
@@ -512,7 +517,12 @@ class GeminiAnalyzer:
             是否成功切换
         """
         try:
-            import google.generativeai as genai
+            # 尝试使用新的 google.genai 包
+            try:
+                import google.genai as genai
+            except ImportError:
+                # 回退到旧的 google.generativeai 包
+                import google.generativeai as genai
             config = get_config()
             fallback_model = config.gemini_model_fallback
             
@@ -574,9 +584,14 @@ class GeminiAnalyzer:
             except Exception as e:
                 error_str = str(e)
                 is_rate_limit = '429' in error_str or 'rate' in error_str.lower() or 'quota' in error_str.lower()
+                is_model_error = 'model' in error_str.lower() and ('not found' in error_str.lower() or 'invalid' in error_str.lower() or 'does not exist' in error_str.lower())
                 
                 if is_rate_limit:
                     logger.warning(f"[OpenAI] API 限流，第 {attempt + 1}/{max_retries} 次尝试: {error_str[:100]}")
+                elif is_model_error:
+                    logger.error(f"[OpenAI] 模型名称错误，第 {attempt + 1}/{max_retries} 次尝试: {error_str[:200]}")
+                    logger.error(f"[OpenAI] 当前配置的模型名称: {self._current_model_name}")
+                    logger.error(f"[OpenAI] 请检查 .env 文件中的 OPENAI_MODEL 配置")
                 else:
                     logger.warning(f"[OpenAI] API 调用失败，第 {attempt + 1}/{max_retries} 次尝试: {error_str[:100]}")
                 
